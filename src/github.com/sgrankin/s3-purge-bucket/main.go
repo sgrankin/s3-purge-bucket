@@ -16,14 +16,15 @@ package main
 
 import "flag"
 import (
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
 	"log"
 	"os"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/s3"
 )
 
 var (
@@ -59,10 +60,7 @@ func init() {
 		prefix = nil
 	}
 
-	client = s3.New(session.New(), &aws.Config{
-		Region: region,
-		//LogLevel: aws.LogLevel(aws.LogDebug),
-	})
+	client = s3.New(session.New(), aws.NewConfig().WithRegion(*region))
 }
 
 func lister(out chan<- []*s3.ObjectIdentifier) {
