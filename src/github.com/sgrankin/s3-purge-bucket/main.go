@@ -56,17 +56,18 @@ func init() {
 		os.Exit(1)
 	}
 
-	if *prefix == "" {
-		prefix = nil
-	}
-
 	client = s3.New(session.New(), aws.NewConfig().WithRegion(*region))
 }
 
 func lister(out chan<- []*s3.ObjectIdentifier) {
+	prefixOrNil := prefix
+	if *prefixOrNil == "" {
+		prefixOrNil = nil
+	}
+
 	err := client.ListObjectVersionsPages(&s3.ListObjectVersionsInput{
 		Bucket: bucket,
-		Prefix: prefix,
+		Prefix: prefixOrNil,
 	}, func(p *s3.ListObjectVersionsOutput, lastPage bool) (shouldContinue bool) {
 		atomic.AddInt64(&stat.requests, 1)
 		result := make([]*s3.ObjectIdentifier, 0, len(p.Versions)+len(p.DeleteMarkers))
@@ -105,6 +106,7 @@ func lister(out chan<- []*s3.ObjectIdentifier) {
 	if err != nil {
 		log.Fatalf("error while listing: %v", err)
 	}
+	close(out)
 	wg.Done()
 }
 
@@ -168,7 +170,7 @@ func main() {
 	}
 	wg.Wait()
 
-	if len(*prefix) == 0 {
+	if *prefix == "" {
 		log.Printf("deleting bucket")
 		deleteBucket()
 	}
