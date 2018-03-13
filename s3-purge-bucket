@@ -1,0 +1,2 @@
+#!/bin/sh
+go run src/github.com/sgrankin/s3-purge-bucket/main.go "$@"

@@ -134,19 +134,23 @@ func deleter(in <-chan []*s3.ObjectIdentifier) {
 	wg.Done()
 }
 
-func progress() {
+func logProgress() {
+	requests := atomic.LoadInt64(&stat.requests)
+	listed := atomic.LoadInt64(&stat.listed)
+	queued := atomic.LoadInt64(&stat.queued)
+	deleted := atomic.LoadInt64(&stat.deleted)
+	deletesPending := atomic.LoadInt64(&stat.deletesPending)
+
+	log.Printf("requests:%d listed:%d queued:%d deletesPending:%d deleted:%d key:%s versionId:%s",
+		requests, listed, queued, deletesPending, deleted,
+		stat.keyMarker, stat.versionIdMarker,
+	)
+}
+
+func progressLogger() {
 	for {
 		time.Sleep(time.Second)
-		requests := atomic.LoadInt64(&stat.requests)
-		listed := atomic.LoadInt64(&stat.listed)
-		queued := atomic.LoadInt64(&stat.queued)
-		deleted := atomic.LoadInt64(&stat.deleted)
-		deletesPending := atomic.LoadInt64(&stat.deletesPending)
-
-		log.Printf("requests:%d listed:%d queued:%d deletesPending:%d deleted:%d key:%s versionId:%s",
-			requests, listed, queued, deletesPending, deleted,
-			stat.keyMarker, stat.versionIdMarker,
-		)
+		logProgress()
 	}
 }
 
@@ -161,7 +165,7 @@ func deleteBucket() {
 
 func main() {
 	log.Printf("deleting all objects in bucket %v", *bucket)
-	go progress()
+	go progressLogger()
 	wg.Add(1 + *numWorkers)
 	wq := make(chan []*s3.ObjectIdentifier, *numWorkers*2)
 	go lister(wq)
@@ -171,7 +175,9 @@ func main() {
 	wg.Wait()
 
 	if *prefix == "" {
-		log.Printf("deleting bucket")
+		log.Printf("deleting bucket %v", *bucket)
 		deleteBucket()
 	}
+	logProgress()
+	log.Printf("done")
 }
