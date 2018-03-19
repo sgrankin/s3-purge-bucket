@@ -48,6 +48,18 @@
 
 [[projects]]
   branch = "master"
+  name = "github.com/kujtimiihoxha/go-balanced-match"
+  packages = ["."]
+  revision = "41b925a5e0fcfa596309ffcbed0aa72dbb04a403"
+
+[[projects]]
+  branch = "master"
+  name = "github.com/kujtimiihoxha/go-brace-expansion"
+  packages = ["."]
+  revision = "9888212dcb84a69d04e9dd153a73deb78992cd44"
+
+[[projects]]
+  branch = "master"
   name = "github.com/rcrowley/go-metrics"
   packages = ["."]
   revision = "8732c616f52954686704c8645fe1a9d59e9df7c1"
@@ -55,6 +67,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "3d4be83126c554f99e3de943c4b1ba919f29c68d103b701669fa835f513daf85"
+  inputs-digest = "8798bdeee739af43b263ddfaf75cf9631780c7d9172ae46d3bf01d96a918eb5c"
   solver-name = "gps-cdcl"
   solver-version = 1

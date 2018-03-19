@@ -29,6 +29,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/kujtimiihoxha/go-brace-expansion"
 	"github.com/rcrowley/go-metrics"
 )
 
@@ -37,9 +38,10 @@ const (
 )
 
 var (
-	region        = flag.String("region", "us-east-1", "AWS Region")
 	buckets       []string
-	countDeleters = flag.Int("workers", 16, "count of concurrent deleter workers")
+	countDeleters = flag.Int("workers", 64, "count of concurrent deleter workers")
+	prefixGlob    = flag.String("prefix", "", "list only this prefix; supports brace expansion for parallelization")
+	region        = flag.String("region", "us-east-1", "AWS Region")
 
 	client *s3.S3
 
@@ -82,9 +84,13 @@ func init() {
 	client = s3.New(session.New(), aws.NewConfig().WithRegion(*region))
 }
 
-func lister(bucket string, out chan<- *deleteRequest) {
+func lister(bucket string, prefix string, out chan<- *deleteRequest) {
+	target := fmt.Sprintf("%s/%s", bucket, prefix)
+	log.Printf("listing %s", target)
+
 	err := client.ListObjectVersionsPages(&s3.ListObjectVersionsInput{
 		Bucket: &bucket,
+		Prefix: &prefix,
 	}, func(p *s3.ListObjectVersionsOutput, lastPage bool) (shouldContinue bool) {
 		stat.requests.Inc(1)
 		objects := make([]*s3.ObjectIdentifier, 0, len(p.Versions)+len(p.DeleteMarkers))
@@ -113,10 +119,11 @@ func lister(bucket string, out chan<- *deleteRequest) {
 		shouldContinue = true
 		return
 	})
+
 	if err != nil {
-		log.Fatalf("error while listing bucket %s: %v", bucket, err)
+		log.Fatalf("error while listing %s: %v", target, err)
 	}
-	log.Printf("finished listing bucket %s", bucket)
+	log.Printf("finished listing %s", target)
 }
 
 func deleteObjects(bucket string, objects []*s3.ObjectIdentifier) error {
@@ -181,19 +188,26 @@ func deleteBucket(bucket string) {
 }
 
 func purgeBuckets(buckets []string) {
-	queue := make(chan *deleteRequest, *countDeleters*2)
+	queue := make(chan *deleteRequest, *countDeleters)
 
 	var listers, deleters sync.WaitGroup
-	listers.Add(len(buckets))
-	for _, bucket := range buckets {
-		go func(bucket string) {
-			defer listers.Done()
-			lister(bucket, queue)
-		}(bucket)
+	prefixes := gobrex.Expand(*prefixGlob)
+	if len(prefixes) == 0 {
+		prefixes = []string{""}
 	}
 
-	deleters.Add(*countDeleters)
+	for _, bucket := range buckets {
+		for _, prefix := range prefixes {
+			listers.Add(1)
+			go func(bucket string, prefix string) {
+				defer listers.Done()
+				lister(bucket, prefix, queue)
+			}(bucket, prefix)
+		}
+	}
+
 	for i := 0; i < *countDeleters; i++ {
+		deleters.Add(1)
 		go func() {
 			defer deleters.Done()
 			deleter(queue)
