@@ -26,9 +26,14 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/rcrowley/go-metrics"
+)
+
+const (
+	internalErrorCode = "InternalError"
 )
 
 var (
@@ -114,27 +119,53 @@ func lister(bucket string, out chan<- *deleteRequest) {
 	log.Printf("finished listing bucket %s", bucket)
 }
 
+func deleteObjects(bucket string, objects []*s3.ObjectIdentifier) error {
+	stat.deletesPending.Inc(1)
+	out, err := client.DeleteObjects(&s3.DeleteObjectsInput{
+		Bucket: &bucket,
+		Delete: &s3.Delete{
+			Objects: objects,
+		},
+	})
+	stat.requests.Inc(1)
+	stat.deletesPending.Dec(1)
+
+	if err != nil {
+		if err, ok := err.(awserr.Error); ok && err.Code() == internalErrorCode {
+			return deleteObjects(bucket, objects)
+		}
+		log.Fatalf("error while deleting: %v", err)
+	}
+
+	stat.deleted.Inc(int64(len(out.Deleted)))
+
+	if len(out.Errors) > 0 {
+		retryableObjects := make([]*s3.ObjectIdentifier, 0)
+		for _, err := range out.Errors {
+			if *err.Code == internalErrorCode {
+				retryableObjects = append(retryableObjects, &s3.ObjectIdentifier{
+					Key:       err.Key,
+					VersionId: err.VersionId,
+				})
+			}
+		}
+
+		if len(retryableObjects) == len(out.Errors) { // all failures are retryable
+			return deleteObjects(bucket, retryableObjects)
+		}
+		log.Fatalf("non-retryable errors while deleting: %v", out.Errors)
+	}
+
+	return err
+}
+
 func deleter(in <-chan *deleteRequest) {
 	for req := range in {
 		stat.queued.Dec(int64(len(req.objects)))
-		stat.deletesPending.Inc(1)
-
-		out, err := client.DeleteObjects(&s3.DeleteObjectsInput{
-			Bucket: &req.bucket,
-			Delete: &s3.Delete{
-				Objects: req.objects,
-			},
-		})
-		stat.requests.Inc(1)
-		stat.deletesPending.Dec(1)
-
+		err := deleteObjects(req.bucket, req.objects)
 		if err != nil {
 			log.Fatalf("error while deleting: %v", err)
 		}
-		if len(out.Errors) > 0 {
-			log.Fatalf("errors while deleting: %v", out.Errors)
-		}
-		stat.deleted.Inc(int64(len(out.Deleted)))
 	}
 }
 
@@ -145,7 +176,7 @@ func deleteBucket(bucket string) {
 	})
 	stat.requests.Inc(1)
 	if err != nil {
-		log.Fatalf("error while deleting bucket: %v", err)
+		log.Fatalf("error while deleting bucket %s: %v", bucket, err)
 	}
 }
 
