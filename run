@@ -1,2 +1,4 @@
 #!/bin/sh
-go run main.go "$@"
+set -euo pipefail
+go vet
+exec go run main.go "$@"
