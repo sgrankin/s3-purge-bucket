@@ -7,7 +7,7 @@ Because the official CLI does not delete object versions, and https://github.com
 # How?
 ```go
 go install github.com/sgrankin/s3-purge-bucket
-s3-purge-bucket -region us-east-2 -bucket bucket
+s3-purge-bucket -region us-east-2 bucket1 bucket2...
 ```
 **There will be no confirmation.**  
 The bucket will be deleted once all files have been removed.
