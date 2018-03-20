@@ -2,38 +2,32 @@
 
 
 [[projects]]
-  name = "github.com/aws/aws-sdk-go"
+  name = "github.com/aws/aws-sdk-go-v2"
   packages = [
     "aws",
     "aws/awserr",
-    "aws/awsutil",
-    "aws/client",
-    "aws/client/metadata",
-    "aws/corehandlers",
-    "aws/credentials",
-    "aws/credentials/ec2rolecreds",
-    "aws/credentials/endpointcreds",
-    "aws/credentials/stscreds",
     "aws/defaults",
     "aws/ec2metadata",
+    "aws/ec2rolecreds",
+    "aws/endpointcreds",
     "aws/endpoints",
-    "aws/request",
-    "aws/session",
+    "aws/external",
     "aws/signer/v4",
-    "internal/sdkio",
-    "internal/sdkrand",
-    "internal/shareddefaults",
+    "aws/stscreds",
+    "internal/awsutil",
+    "internal/sdk",
     "private/protocol",
     "private/protocol/query",
     "private/protocol/query/queryutil",
     "private/protocol/rest",
     "private/protocol/restxml",
+    "private/protocol/xml",
     "private/protocol/xml/xmlutil",
     "service/s3",
     "service/sts"
   ]
-  revision = "1f8fb9d0919e5a58992207db9512a03f76ab0274"
-  version = "v1.13.12"
+  revision = "3383499f1024e86a3c68200f9bdc6759ee20eb70"
+  version = "v2.0.0-preview.3"
 
 [[projects]]
   name = "github.com/go-ini/ini"
@@ -48,18 +42,6 @@
 
 [[projects]]
   branch = "master"
-  name = "github.com/kujtimiihoxha/go-balanced-match"
-  packages = ["."]
-  revision = "41b925a5e0fcfa596309ffcbed0aa72dbb04a403"
-
-[[projects]]
-  branch = "master"
-  name = "github.com/kujtimiihoxha/go-brace-expansion"
-  packages = ["."]
-  revision = "9888212dcb84a69d04e9dd153a73deb78992cd44"
-
-[[projects]]
-  branch = "master"
   name = "github.com/rcrowley/go-metrics"
   packages = ["."]
   revision = "8732c616f52954686704c8645fe1a9d59e9df7c1"
@@ -67,6 +49,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "8798bdeee739af43b263ddfaf75cf9631780c7d9172ae46d3bf01d96a918eb5c"
+  inputs-digest = "77741266f4db76ba08dbb36cb177776ecfab5f68564349d3f2d38116c058b496"
   solver-name = "gps-cdcl"
   solver-version = 1

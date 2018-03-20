@@ -15,195 +15,93 @@
 package main
 
 import (
-	"bytes"
 	"flag"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
-	"sort"
-	"strconv"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/kujtimiihoxha/go-brace-expansion"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/rcrowley/go-metrics"
-)
-
-const (
-	internalErrorCode = "InternalError"
+	"github.com/sgrankin/s3-purge-bucket/s3util"
 )
 
 var (
-	buckets       []string
+	s3URLs        []string
 	countDeleters = flag.Int("workers", 64, "count of concurrent deleter workers")
-	prefixGlob    = flag.String("prefix", "", "list only this prefix; supports brace expansion for parallelization")
 	region        = flag.String("region", "us-east-1", "AWS Region")
+	dryrun        = flag.Bool("dryrun", false, "skip any destructive actions")
 
-	client *s3.S3
+	client *s3util.S3
 
-	stat = struct {
-		listed         metrics.Counter
-		requests       metrics.Counter
-		queued         metrics.Counter
-		deletesPending metrics.Counter
-		deleted        metrics.Counter
-	}{
-		listed:         metrics.NewRegisteredCounter("listed", nil),
-		requests:       metrics.NewRegisteredCounter("requests", nil),
-		queued:         metrics.NewRegisteredCounter("queued", nil),
-		deletesPending: metrics.NewRegisteredCounter("deletesPending", nil),
-		deleted:        metrics.NewRegisteredCounter("deleted", nil),
-	}
+	statObjsQueued = metrics.NewRegisteredCounter("objs_queued", nil)
+)
+
+const (
+	usageFmt = `
+usage: %s [options] <url>...
+
+Where:
+  url: S3 URL in the form s3://bucket or s3://bucket/prefix.  Use multiple URLs (via shell expansion) to parallelize listing.
+
+Options:
+`
 )
 
 type deleteRequest struct {
 	bucket  string
-	objects []*s3.ObjectIdentifier
+	objects []s3.ObjectIdentifier
 }
 
 func init() {
+	log.SetFlags(log.Ldate | log.Lmicroseconds)
+
 	flag.Usage = func() {
-		fmt.Fprintf(
-			flag.CommandLine.Output(), "usage: %s [OPTION]... [BUCKET]...\n\nOptions:\n",
-			os.Args[0],
-		)
+		fmt.Fprintf(flag.CommandLine.Output(), strings.TrimSpace(usageFmt)+"\n", os.Args[0])
 		flag.PrintDefaults()
 	}
 	flag.Parse()
-	buckets = flag.Args()
 
-	if len(buckets) == 0 {
+	s3URLs = flag.Args()
+	if len(s3URLs) == 0 {
 		flag.Usage()
 		os.Exit(1)
 	}
 
-	client = s3.New(session.New(), aws.NewConfig().WithRegion(*region))
+	client = s3util.MustNewClient(*region)
 }
 
-func lister(bucket string, prefix string, out chan<- *deleteRequest) {
-	target := fmt.Sprintf("%s/%s", bucket, prefix)
-	log.Printf("listing %s", target)
+func main() {
+	log.Printf("deleting all objects in paths %v", s3URLs)
 
-	err := client.ListObjectVersionsPages(&s3.ListObjectVersionsInput{
-		Bucket: &bucket,
-		Prefix: &prefix,
-	}, func(p *s3.ListObjectVersionsOutput, lastPage bool) (shouldContinue bool) {
-		stat.requests.Inc(1)
-		objects := make([]*s3.ObjectIdentifier, 0, len(p.Versions)+len(p.DeleteMarkers))
-		for _, ver := range p.Versions {
-			objects = append(objects, &s3.ObjectIdentifier{
-				Key:       ver.Key,
-				VersionId: ver.VersionId,
-			})
-		}
-		for _, ver := range p.DeleteMarkers {
-			objects = append(objects, &s3.ObjectIdentifier{
-				Key:       ver.Key,
-				VersionId: ver.VersionId,
-			})
-		}
-
-		stat.listed.Inc(int64(len(objects)))
-
-		if len(objects) > 0 {
-			stat.queued.Inc(int64(len(objects)))
-			out <- &deleteRequest{
-				bucket:  bucket,
-				objects: objects,
-			}
-		}
-		shouldContinue = true
-		return
-	})
-
-	if err != nil {
-		log.Fatalf("error while listing %s: %v", target, err)
-	}
-	log.Printf("finished listing %s", target)
+	go metricsLogger(3 * time.Second)
+	purgeBuckets(s3URLs)
+	s3util.LogMetrics() // log final metrics
 }
 
-func deleteObjects(bucket string, objects []*s3.ObjectIdentifier) error {
-	stat.deletesPending.Inc(1)
-	out, err := client.DeleteObjects(&s3.DeleteObjectsInput{
-		Bucket: &bucket,
-		Delete: &s3.Delete{
-			Objects: objects,
-		},
-	})
-	stat.requests.Inc(1)
-	stat.deletesPending.Dec(1)
-
-	if err != nil {
-		if err, ok := err.(awserr.Error); ok && err.Code() == internalErrorCode {
-			return deleteObjects(bucket, objects)
-		}
-		log.Fatalf("error while deleting: %v", err)
-	}
-
-	stat.deleted.Inc(int64(len(out.Deleted)))
-
-	if len(out.Errors) > 0 {
-		retryableObjects := make([]*s3.ObjectIdentifier, 0)
-		for _, err := range out.Errors {
-			if *err.Code == internalErrorCode {
-				retryableObjects = append(retryableObjects, &s3.ObjectIdentifier{
-					Key:       err.Key,
-					VersionId: err.VersionId,
-				})
-			}
-		}
-
-		if len(retryableObjects) == len(out.Errors) { // all failures are retryable
-			return deleteObjects(bucket, retryableObjects)
-		}
-		log.Fatalf("non-retryable errors while deleting: %v", out.Errors)
-	}
-
-	return err
-}
-
-func deleter(in <-chan *deleteRequest) {
-	for req := range in {
-		stat.queued.Dec(int64(len(req.objects)))
-		err := deleteObjects(req.bucket, req.objects)
-		if err != nil {
-			log.Fatalf("error while deleting: %v", err)
-		}
+func metricsLogger(period time.Duration) {
+	for _ = range time.Tick(period) {
+		s3util.LogMetrics()
 	}
 }
 
-func deleteBucket(bucket string) {
-	log.Printf("removing bucket %s", bucket)
-	_, err := client.DeleteBucket(&s3.DeleteBucketInput{
-		Bucket: &bucket,
-	})
-	stat.requests.Inc(1)
-	if err != nil {
-		log.Fatalf("error while deleting bucket %s: %v", bucket, err)
-	}
-}
-
-func purgeBuckets(buckets []string) {
+func purgeBuckets(rawurls []string) {
+	var listers, deleters sync.WaitGroup
 	queue := make(chan *deleteRequest, *countDeleters)
 
-	var listers, deleters sync.WaitGroup
-	prefixes := gobrex.Expand(*prefixGlob)
-	if len(prefixes) == 0 {
-		prefixes = []string{""}
-	}
+	buckets := make(map[string]bool)
+	for _, rawurl := range rawurls {
+		bucket, path := splitS3URL(rawurl)
+		buckets[bucket] = true
 
-	for _, bucket := range buckets {
-		for _, prefix := range prefixes {
-			listers.Add(1)
-			go func(bucket string, prefix string) {
-				defer listers.Done()
-				lister(bucket, prefix, queue)
-			}(bucket, prefix)
-		}
+		listers.Add(1)
+		go func(bucket string, prefix string) {
+			defer listers.Done()
+			lister(bucket, prefix, queue)
+		}(bucket, path)
 	}
 
 	for i := 0; i < *countDeleters; i++ {
@@ -213,54 +111,49 @@ func purgeBuckets(buckets []string) {
 			deleter(queue)
 		}()
 	}
+
 	listers.Wait()
 	close(queue)
 	deleters.Wait()
 
-	for _, bucket := range buckets {
-		deleteBucket(bucket)
+	if !*dryrun {
+		for bucket := range buckets {
+			log.Printf("removing bucket %s", bucket)
+			client.MustDeleteBucket(bucket)
+		}
 	}
 }
 
-func logMetrics() {
-	registry := metrics.DefaultRegistry
-
-	keys := make([]string, 0)
-	values := make(map[string]string)
-
-	registry.Each(func(name string, i interface{}) {
-		keys = append(keys, name)
-		switch metric := i.(type) {
-		case metrics.Counter:
-			values[name] = strconv.FormatInt(metric.Count(), 10)
-		case metrics.Gauge:
-			values[name] = strconv.FormatInt(metric.Value(), 10)
-		default:
-			log.Fatalf("unknown metric type %v", metric)
+func lister(bucket, prefix string, queue chan<- *deleteRequest) {
+	log.Printf("listing %s/%s", bucket, prefix)
+	client.MustListObjectVersions(bucket, prefix, func(objects []s3.ObjectIdentifier) {
+		statObjsQueued.Inc(int64(len(objects)))
+		queue <- &deleteRequest{
+			bucket:  bucket,
+			objects: objects,
 		}
 	})
-
-	var buffer bytes.Buffer
-	buffer.WriteString("metrics:")
-
-	sort.Strings(keys)
-	for _, k := range keys {
-		buffer.WriteString(fmt.Sprintf(" %s:%s", k, values[k]))
-	}
-
-	log.Print(buffer.String())
+	log.Printf("finished listing %s/%s", bucket, prefix)
 }
 
-func metricsLogger(period time.Duration) {
-	for _ = range time.Tick(period) {
-		logMetrics()
+func deleter(in <-chan *deleteRequest) {
+	for req := range in {
+		statObjsQueued.Dec(int64(len(req.objects)))
+		if !*dryrun {
+			client.MustDeleteObjectVersions(req.bucket, req.objects)
+		}
 	}
 }
 
-func main() {
-	log.Printf("deleting all objects in buckets %v", buckets)
-	go metricsLogger(3 * time.Second)
-	purgeBuckets(buckets)
-	logMetrics()
-	log.Printf("done")
+func splitS3URL(rawurl string) (bucket, prefix string) {
+	u, err := url.Parse(rawurl)
+	if err != nil {
+		log.Fatalf("error: can't parse URL '%s'", rawurl)
+	}
+
+	if u.Scheme != "s3" {
+		log.Fatalf("error: URL scheme must be s3 in URL '%s'", u)
+	}
+
+	return u.Host, strings.TrimLeft(u.Path, "/")
 }
